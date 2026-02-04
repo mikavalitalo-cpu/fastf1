@@ -6,13 +6,15 @@ app = FastAPI()
 def health():
     return {"status": "ok"}
 
+from datetime import datetime
+
 @app.get("/positions")
 def positions():
-    # Fake data for testing the frontend
-    return [
-        {"position": 1, "driver": "VER", "name": "Max Verstappen"},
-        {"position": 2, "driver": "NOR", "name": "Lando Norris"},
-        {"position": 3, "driver": "LEC", "name": "Charles Leclerc"},
-        {"position": 4, "driver": "HAM", "name": "Lewis Hamilton"},
-        {"position": 5, "driver": "SAI", "name": "Carlos Sainz"},
-    ]
+    return {
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "positions": [
+            {"position": 1, "driver": "VER", "name": "Max Verstappen"},
+            {"position": 2, "driver": "NOR", "name": "Lando Norris"},
+            {"position": 3, "driver": "LEC", "name": "Charles Leclerc"},
+        ]
+    }
