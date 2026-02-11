@@ -1,3 +1,4 @@
 fastapi
 uvicorn
 fastf1
+requests
