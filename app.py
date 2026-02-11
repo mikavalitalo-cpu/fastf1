@@ -5,7 +5,6 @@ import hmac
 import threading
 from typing import List, Dict, Any, Optional
 
-import requests
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -15,17 +14,11 @@ app = FastAPI()
 # Config (Render environment variables)
 # -----------------------------
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
-
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-# Prefer service role key for server-side access (recommended)
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-# If you only have anon key, you can use this instead (less ideal server-side)
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+DRIVER_CODES_ENV = os.getenv("DRIVER_CODES", "").strip()
 
 SIM_RACE_ID = "test-race-simulation-gp"
 TICK_SECONDS = 5.0
 
-# Optional: allow your Lovable domain(s). "*" is OK for hobby project.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,11 +29,10 @@ app.add_middleware(
 
 # -----------------------------
 # In-memory simulation state
-# Note: this resets whenever Render restarts/sleeps cold.
 # -----------------------------
 _state_lock = threading.Lock()
 _sim_on: bool = False
-_grid: List[str] = []  # full driver order
+_grid: List[str] = []
 _last_tick_monotonic: float = 0.0
 _tick_count: int = 0
 _last_grid_loaded_at_utc: Optional[str] = None
@@ -50,19 +42,8 @@ _last_grid_loaded_at_utc: Optional[str] = None
 # Helpers
 # -----------------------------
 def utc_iso_now() -> str:
-    # ISO-like without importing datetime repeatedly (simple enough for UI)
-    # If you want strict ISO with timezone: use datetime.now(timezone.utc).isoformat()
     import datetime
     return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
-
-def _get_supabase_key() -> str:
-    # Service role key is preferred on backend.
-    if SUPABASE_SERVICE_ROLE_KEY:
-        return SUPABASE_SERVICE_ROLE_KEY
-    if SUPABASE_ANON_KEY:
-        return SUPABASE_ANON_KEY
-    return ""
 
 
 def _require_admin_token(x_admin_token: Optional[str]) -> None:
@@ -72,51 +53,32 @@ def _require_admin_token(x_admin_token: Optional[str]) -> None:
     if not x_admin_token:
         raise HTTPException(status_code=401, detail="Missing X-Admin-Token")
 
-    # constant-time compare
     if not hmac.compare_digest(x_admin_token, ADMIN_TOKEN):
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
 
-def fetch_active_driver_codes_from_supabase() -> List[str]:
+def parse_driver_codes_from_env() -> List[str]:
     """
-    Fetch driver codes from Supabase PostgREST:
-    table: drivers
-    columns: code, active, created_at
-    filter: active = true
-    order: created_at asc
+    Expect 22 driver codes comma-separated in DRIVER_CODES env var.
+    If not provided, fallback to correct 2026 22-driver list.
     """
-    if not SUPABASE_URL:
-        raise RuntimeError("SUPABASE_URL not configured")
-    key = _get_supabase_key()
-    if not key:
-        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY (preferred) or SUPABASE_ANON_KEY not configured")
+    if DRIVER_CODES_ENV:
+        parts = [p.strip().upper() for p in DRIVER_CODES_ENV.split(",")]
+        codes: List[str] = []
+        seen = set()
+        for c in parts:
+            if c and c not in seen:
+                seen.add(c)
+                codes.append(c)
+        return codes
 
-    url = f"{SUPABASE_URL}/rest/v1/drivers"
-    params = {
-        "select": "code,created_at",
-        "active": "eq.true",
-        "order": "created_at.asc",
-    }
-    headers = {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Accept": "application/json",
-    }
-
-    resp = requests.get(url, params=params, headers=headers, timeout=10)
-    if resp.status_code >= 400:
-        raise RuntimeError(f"Supabase drivers fetch failed: {resp.status_code} {resp.text}")
-
-    rows = resp.json()
-    codes: List[str] = []
-    seen = set()
-    for r in rows:
-        c = (r.get("code") or "").strip().upper()
-        if c and c not in seen:
-            seen.add(c)
-            codes.append(c)
-
-    return codes
+    # Fallback: your actual 22-driver list
+    return [
+        "PER", "GAS", "COL", "ALO", "STR", "BOT",
+        "LEC", "HAM", "BEA", "OCO", "PIA", "NOR",
+        "RUS", "LAW", "TSU", "VER", "ISA", "HUL",
+        "BOR", "SAI", "ALB", "ANT",
+    ]
 
 
 def ensure_grid_loaded(force_reload: bool = False) -> None:
@@ -127,20 +89,16 @@ def ensure_grid_loaded(force_reload: bool = False) -> None:
     if not need:
         return
 
-    codes = fetch_active_driver_codes_from_supabase()
+    codes = parse_driver_codes_from_env()
     if len(codes) < 8:
-        raise RuntimeError(f"Not enough active drivers in Supabase (need >= 8, got {len(codes)})")
+        raise RuntimeError(f"Not enough driver codes (need >= 8, got {len(codes)})")
 
     with _state_lock:
-        _grid = codes
+        _grid = codes.copy()
         _last_grid_loaded_at_utc = utc_iso_now()
 
 
 def perform_lazy_tick_if_needed() -> None:
-    """
-    Update grid only when sim is on AND at least TICK_SECONDS passed since last tick.
-    Make 0–2 adjacent swaps, biased away from P1 so the leader doesn't change every tick.
-    """
     global _last_tick_monotonic, _tick_count
 
     with _state_lock:
@@ -155,8 +113,6 @@ def perform_lazy_tick_if_needed() -> None:
         if (now_m - _last_tick_monotonic) < TICK_SECONDS:
             return
 
-    # do tick outside lock, then lock to apply safely
-    # choose 0–2 swaps
     swaps = random.choices([0, 1, 2], weights=[0.25, 0.55, 0.20], k=1)[0]
 
     with _state_lock:
@@ -165,22 +121,15 @@ def perform_lazy_tick_if_needed() -> None:
             return
 
         for _ in range(swaps):
-            # Bias swaps towards middle/back; avoid always messing with P1/P2
-            # Choose an index i to swap with i+1
-            # 0-based positions: 0..n-1
-            # We'll bias i toward 3..n-2 (i+1 must exist)
             if n <= 3:
                 i = random.randint(0, n - 2)
             else:
-                # Heavier weight for mid-pack:
-                candidate_indices = list(range(1, n - 1))  # i in [1..n-2]
+                candidate_indices = list(range(1, n - 1))
                 weights = []
                 for idx in candidate_indices:
-                    # idx close to middle -> higher weight, idx near 1 -> lower
                     mid = (n - 1) / 2.0
                     dist = abs(idx - mid)
-                    w = max(0.2, 1.5 - (dist / mid))  # simple bell-ish curve
-                    # Slightly reduce changes at very front:
+                    w = max(0.2, 1.5 - (dist / mid))
                     if idx <= 1:
                         w *= 0.5
                     weights.append(w)
@@ -209,11 +158,6 @@ def health():
 
 @app.get("/positions")
 def positions():
-    """
-    If sim is on -> returns simulated live order for test race.
-    If sim is off -> not_live.
-    """
-    # If sim is off, no need to load drivers or tick.
     with _state_lock:
         sim_on = _sim_on
 
@@ -225,11 +169,9 @@ def positions():
             "order": [],
         }
 
-    # Ensure we have a grid (22 drivers from Supabase)
     try:
         ensure_grid_loaded(force_reload=False)
     except Exception as e:
-        # If drivers aren't available, treat as error but keep API stable
         return {
             "status": "error",
             "race_id": SIM_RACE_ID,
@@ -238,7 +180,6 @@ def positions():
             "error": str(e),
         }
 
-    # Update order lazily (every ~5 seconds)
     perform_lazy_tick_if_needed()
 
     return {
@@ -250,7 +191,7 @@ def positions():
 
 
 # -----------------------------
-# Admin simulation endpoints (token-protected)
+# Admin simulation endpoints
 # -----------------------------
 @app.get("/sim/status")
 def sim_status(x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token")):
@@ -270,11 +211,7 @@ def sim_start(x_admin_token: Optional[str] = Header(default=None, alias="X-Admin
     global _sim_on
     _require_admin_token(x_admin_token)
 
-    # Load drivers if needed
-    try:
-        ensure_grid_loaded(force_reload=False)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load drivers from Supabase: {e}")
+    ensure_grid_loaded(force_reload=True)
 
     with _state_lock:
         _sim_on = True
@@ -293,17 +230,13 @@ def sim_stop(x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-
 
 @app.post("/sim/reset")
 def sim_reset(x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token")):
-    global _grid, _tick_count, _last_tick_monotonic
+    global _tick_count, _last_tick_monotonic
     _require_admin_token(x_admin_token)
 
-    try:
-        ensure_grid_loaded(force_reload=True)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to reload drivers from Supabase: {e}")
+    ensure_grid_loaded(force_reload=True)
 
     with _state_lock:
         _tick_count = 0
         _last_tick_monotonic = 0.0
 
     return {"ok": True, "sim_on": _sim_on, "grid_size": len(_grid), "updated_at": utc_iso_now()}
-
