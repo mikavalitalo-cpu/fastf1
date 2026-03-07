@@ -274,14 +274,33 @@ def extract_grid_from_race_results(results_df) -> List[Dict[str, Any]]:
     seen_drv = set()
 
     for _, row in results_df.iterrows():
-        driver = normalize_driver_code(row.get("Abbreviation"))
+        driver = str(row.get("Abbreviation")).strip().upper()
         pos = safe_int(row.get("GridPosition"))
+
         if driver and pos and pos > 0 and driver not in seen_drv and pos not in seen_pos:
             rows.append({"position": pos, "driver": driver})
             seen_drv.add(driver)
             seen_pos.add(pos)
 
     rows.sort(key=lambda x: x["position"])
+
+    # --------------------------------------------------
+    # Fill missing drivers if FastF1 grid incomplete
+    # --------------------------------------------------
+
+    expected = parse_driver_codes_from_env()
+
+    missing = [d for d in expected if d not in seen_drv]
+
+    next_pos = len(rows) + 1
+
+    for drv in missing:
+        rows.append({
+            "position": next_pos,
+            "driver": drv
+        })
+        next_pos += 1
+
     return rows
 
 
@@ -294,14 +313,33 @@ def extract_grid_from_quali_results(results_df) -> List[Dict[str, Any]]:
     seen_drv = set()
 
     for _, row in results_df.iterrows():
-        driver = normalize_driver_code(row.get("Abbreviation"))
+        driver = str(row.get("Abbreviation")).strip().upper()
         pos = safe_int(row.get("Position"))
+
         if driver and pos and pos > 0 and driver not in seen_drv and pos not in seen_pos:
             rows.append({"position": pos, "driver": driver})
             seen_drv.add(driver)
             seen_pos.add(pos)
 
     rows.sort(key=lambda x: x["position"])
+
+    # --------------------------------------------------
+    # Ensure we always return full grid of drivers
+    # --------------------------------------------------
+
+    expected = parse_driver_codes_from_env()
+
+    missing = [d for d in expected if d not in seen_drv]
+
+    next_pos = len(rows) + 1
+
+    for drv in missing:
+        rows.append({
+            "position": next_pos,
+            "driver": drv
+        })
+        next_pos += 1
+
     return rows
 
 
