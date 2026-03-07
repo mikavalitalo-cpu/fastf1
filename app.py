@@ -70,10 +70,8 @@ FASTF1_TO_APP_CODE = {
 
     # Your custom app codes vs possible FastF1 abbreviations
     # adjust if FastF1 uses different values in 2026:
-    "HAD": "ISA",   # Isack Hadjar -> your app code ISA
-    "ISA": "ISA",
-    "LIN": "TSU",   # Arvid Lindblad -> your app code TSU
-    "TSU": "TSU",
+    "HAD": "HAD",   # Isack Hadjar -> your app code ISA
+    "LIN": "LIN",   # Arvid Lindblad -> your app code TSU
     "BOR": "BOR",
 }
 
