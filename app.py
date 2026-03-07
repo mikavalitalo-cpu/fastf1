@@ -78,6 +78,7 @@ FASTF1_TO_APP_CODE = {
 # --------------------------------------------------
 RACE_ID_TO_ROUND = {
     "2026-australian": 1,
+    "2026-australia": 1,
     "2026-chinese": 2,
     "2026-japanese": 3,
     "2026-bahrain": 4,
