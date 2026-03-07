@@ -41,7 +41,7 @@ if FASTF1_CACHE:
 # --------------------------------------------------
 # Driver code mapping
 # Your app codes:
-# PER,GAS,COL,ALO,STR,BOT,LEC,HAM,BEA,OCO,PIA,NOR,RUS,LAW,TSU,VER,ISA,HUL,BOR,SAI,ALB,ANT
+# PER,GAS,COL,ALO,STR,BOT,LEC,HAM,BEA,OCO,PIA,NOR,RUS,LAW,TSU,VER,HUL,BOR,SAI,ALB,ANT
 #
 # FastF1 usually uses official abbreviations, but rookies / changed seats may differ.
 # Adjust these aliases if needed after the first real race weekend test.
@@ -67,11 +67,8 @@ FASTF1_TO_APP_CODE = {
     "SAI": "SAI",
     "ALB": "ALB",
     "ANT": "ANT",
-
-    # Your custom app codes vs possible FastF1 abbreviations
-    # adjust if FastF1 uses different values in 2026:
-    "HAD": "HAD",   # Isack Hadjar -> your app code ISA
-    "LIN": "LIN",   # Arvid Lindblad -> your app code TSU
+    "HAD": "HAD",   
+    "LIN": "LIN",   
     "BOR": "BOR",
 }
 
@@ -162,7 +159,7 @@ def parse_driver_codes_from_env() -> List[str]:
     return [
         "PER", "GAS", "COL", "ALO", "STR", "BOT",
         "LEC", "HAM", "BEA", "OCO", "PIA", "NOR",
-        "RUS", "LAW", "TSU", "VER", "ISA", "HUL",
+        "RUS", "LAW", "LIN", "VER", "HAD", "HUL",
         "BOR", "SAI", "ALB", "ANT",
     ]
 
