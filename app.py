@@ -176,6 +176,97 @@ def parse_driver_codes_from_env() -> List[str]:
     ]
 
 
+
+
+def process_timing_data(data):
+    global latest_positions, latest_updated_at
+
+    lines = data.get("Lines")
+    if not lines:
+        return
+
+    rows = []
+
+    for drv, info in lines.items():
+        pos = info.get("Position")
+        if not pos:
+            continue
+
+        code = driver_number_to_code(drv)
+        if not code:
+            continue
+
+        try:
+            pos = int(pos)
+        except:
+            continue
+
+        rows.append({
+            "position": pos,
+            "driver": code
+        })
+
+    rows.sort(key=lambda x: x["position"])
+
+    if rows:
+        latest_positions = rows
+        latest_updated_at = utc_iso_now()
+
+def start_f1_live_timing():
+    global ws_connected
+
+    def on_message(ws, message):
+        try:
+            data = json.loads(message)
+        except:
+            return
+
+        if not isinstance(data, dict):
+            return
+
+        if "M" not in data:
+            return
+
+        for msg in data["M"]:
+            if msg.get("M") != "feed":
+                continue
+
+            args = msg.get("A")
+            if not args or len(args) < 2:
+                continue
+
+            topic = args[0]
+            payload = args[1]
+
+            if topic == "TimingData":
+                process_timing_data(payload)
+
+    def on_open(ws):
+        global ws_connected
+        ws_connected = True
+
+        subscribe = {
+            "H": "streaming",
+            "M": "Subscribe",
+            "A": [["TimingData"]],
+            "I": 1
+        }
+
+        ws.send(json.dumps(subscribe))
+
+    def on_close(ws, *_):
+        global ws_connected
+        ws_connected = False
+
+    ws = websocket.WebSocketApp(
+        "wss://livetiming.formula1.com/signalr/connect?transport=webSockets&clientProtocol=1.5&connectionData=%5B%7B%22name%22%3A%22streaming%22%7D%5D",
+        on_message=on_message,
+        on_open=on_open,
+        on_close=on_close,
+    )
+
+    ws.run_forever()
+
 def ensure_grid_loaded(force_reload: bool = False) -> None:
     global _grid, _last_grid_loaded_at_utc
 
@@ -511,28 +602,21 @@ def health():
 
 @app.get("/positions")
 def positions():
-    with _state_lock:
-        sim_on = _sim_on
 
-    # 1) Simulaatio edelleen etusijalla testikäyttöön
-    if sim_on:
-        try:
-            ensure_grid_loaded(force_reload=False)
-            perform_lazy_tick_if_needed()
-            return {
-                "status": "live",
-                "race_id": SIM_RACE_ID,
-                "updated_at": utc_iso_now(),
-                "order": top8_order_payload(),
-            }
-        except Exception as e:
-            return {
-                "status": "error",
-                "race_id": SIM_RACE_ID,
-                "updated_at": utc_iso_now(),
-                "order": [],
-                "error": str(e),
-            }
+    if latest_positions:
+        return {
+            "status": "live",
+            "race_id": "2026-australia",
+            "updated_at": latest_updated_at,
+            "order": latest_positions[:8],
+        }
+
+    return {
+        "status": "not_live",
+        "race_id": "2026-australia",
+        "updated_at": utc_iso_now(),
+        "order": [],
+    }
 
     # 2) Oikea live-race FastF1:stä
     # Tässä oletetaan että nyt käynnissä oleva kisa on Australian GP
@@ -750,3 +834,10 @@ def sim_reset(x_admin_token: Optional[str] = Header(default=None, alias="X-Admin
         _last_tick_monotonic = 0.0
 
     return {"ok": True, "sim_on": _sim_on, "grid_size": len(_grid), "updated_at": utc_iso_now()}
+
+
+def start_background_ws():
+    t = threading.Thread(target=start_f1_live_timing, daemon=True)
+    t.start()
+
+start_background_ws()
