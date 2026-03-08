@@ -8,11 +8,19 @@ from typing import List, Dict, Any, Optional, Tuple
 from fastf1 import _api as ff1api
 import pandas as pd
 
+import json
+import websocket
+import threading
+
 import fastf1
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+latest_positions = []
+latest_updated_at = None
+ws_connected = False
 
 # --------------------------------------------------
 # Config
@@ -467,6 +475,31 @@ def infer_results_provisional(results_df, numeric_results: List[Dict[str, Any]])
     # Conservative default for race-day operations.
     return True
 
+
+def driver_number_to_code(num: str) -> str:
+    mapping = {
+        "1": "VER",
+        "4": "NOR",
+        "5": "BOR",
+        "10": "GAS",
+        "11": "PER",
+        "12": "ANT",
+        "14": "ALO",
+        "16": "LEC",
+        "18": "STR",
+        "23": "ALB",
+        "27": "HUL",
+        "30": "LAW",
+        "31": "OCO",
+        "43": "COL",
+        "44": "HAM",
+        "55": "SAI",
+        "63": "RUS",
+        "77": "BOT",
+        "81": "PIA",
+        "87": "BEA",
+    }
+    return mapping.get(num)
 
 # --------------------------------------------------
 # Public endpoints
