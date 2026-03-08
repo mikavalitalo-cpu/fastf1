@@ -5,6 +5,9 @@ import hmac
 import threading
 from typing import List, Dict, Any, Optional, Tuple
 
+from fastf1 import _api as ff1api
+import pandas as pd
+
 import fastf1
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -370,6 +373,87 @@ def extract_race_results(results_df) -> List[Dict[str, Any]]:
     return rows
 
 
+def get_live_stream_order_for_race_id(race_id: str) -> List[Dict[str, Any]]:
+    """
+    Fetch current live order from FastF1 timing stream.
+    Uses private FastF1 API timing_data() because it exposes stream_data.Position.
+    """
+    round_no = get_round_for_race_id(race_id)
+    if round_no == 0:
+        return []
+
+    # Race session
+    session = fastf1.get_session(2026, round_no, "R")
+
+    # We need api_path; loading minimal session metadata is the safest route
+    session.load(laps=False, telemetry=False, weather=False)
+
+    # timing_data returns (laps_data, stream_data)
+    _, stream_data = ff1api.timing_data(session.api_path)
+
+    if stream_data is None or len(stream_data) == 0:
+        return []
+
+    return extract_live_order_from_stream(stream_data)
+
+
+def extract_live_order_from_stream(stream_data: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Build current order from the latest timing stream sample per driver.
+    """
+    if stream_data is None or stream_data.empty:
+        return []
+
+    df = stream_data.copy()
+
+    # clean obvious bad rows
+    df = df[df["Driver"].notna()]
+    df = df[df["Position"].notna()]
+
+    if df.empty:
+        return []
+
+    # Normalize types
+    df["Driver"] = df["Driver"].astype(str).str.strip().str.upper()
+    df["Position"] = pd.to_numeric(df["Position"], errors="coerce")
+    df = df[df["Position"].notna()]
+
+    if df.empty:
+        return []
+
+    # Use latest known sample per driver
+    # Time is session-relative timestamp in stream_data
+    df = df.sort_values("Time")
+    latest_per_driver = df.groupby("Driver", as_index=False).tail(1)
+
+    # Keep only sensible race positions
+    latest_per_driver = latest_per_driver[
+        (latest_per_driver["Position"] >= 1) & (latest_per_driver["Position"] <= 22)
+    ]
+
+    if latest_per_driver.empty:
+        return []
+
+    latest_per_driver = latest_per_driver.sort_values("Position")
+
+    rows = []
+    seen_pos = set()
+    for _, row in latest_per_driver.iterrows():
+        pos = int(row["Position"])
+        drv = row["Driver"]
+
+        if pos in seen_pos:
+            continue
+
+        rows.append({
+            "position": pos,
+            "driver": drv
+        })
+        seen_pos.add(pos)
+
+    return rows
+
+
 def infer_results_provisional(results_df, numeric_results: List[Dict[str, Any]]) -> bool:
     """
     Conservative rule:
@@ -397,33 +481,58 @@ def positions():
     with _state_lock:
         sim_on = _sim_on
 
-    if not sim_on:
-        return {
-            "status": "not_live",
-            "race_id": None,
-            "updated_at": utc_iso_now(),
-            "order": [],
-        }
+    # 1) Simulaatio edelleen etusijalla testikäyttöön
+    if sim_on:
+        try:
+            ensure_grid_loaded(force_reload=False)
+            perform_lazy_tick_if_needed()
+            return {
+                "status": "live",
+                "race_id": SIM_RACE_ID,
+                "updated_at": utc_iso_now(),
+                "order": top8_order_payload(),
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "race_id": SIM_RACE_ID,
+                "updated_at": utc_iso_now(),
+                "order": [],
+                "error": str(e),
+            }
+
+    # 2) Oikea live-race FastF1:stä
+    # Tässä oletetaan että nyt käynnissä oleva kisa on Australian GP
+    # Voit vaihtaa tämän myöhemmin dynaamiseksi.
+    live_race_id = "2026-australia"
 
     try:
-        ensure_grid_loaded(force_reload=False)
+        live_rows = get_live_stream_order_for_race_id(live_race_id)
+
+        if len(live_rows) == 0:
+            return {
+                "status": "not_live",
+                "race_id": live_race_id,
+                "updated_at": utc_iso_now(),
+                "order": [],
+            }
+
+        # palauta top 8
+        return {
+            "status": "live",
+            "race_id": live_race_id,
+            "updated_at": utc_iso_now(),
+            "order": live_rows[:8],
+        }
+
     except Exception as e:
         return {
             "status": "error",
-            "race_id": SIM_RACE_ID,
+            "race_id": live_race_id,
             "updated_at": utc_iso_now(),
             "order": [],
             "error": str(e),
         }
-
-    perform_lazy_tick_if_needed()
-
-    return {
-        "status": "live",
-        "race_id": SIM_RACE_ID,
-        "updated_at": utc_iso_now(),
-        "order": top8_order_payload(),
-    }
 
 
 @app.get("/grid")
