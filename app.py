@@ -5,6 +5,9 @@ import hmac
 import threading
 from typing import List, Dict, Any, Optional, Tuple
 
+import requests
+import urllib.parse
+
 from fastf1 import _api as ff1api
 import pandas as pd
 
@@ -215,19 +218,43 @@ def process_timing_data(data):
 def start_f1_live_timing():
     global ws_connected
 
+    try:
+        # Step 1: negotiate connection token
+        negotiate_url = "https://livetiming.formula1.com/signalr/negotiate"
+        params = {
+            "clientProtocol": "1.5",
+            "connectionData": '[{"name":"streaming"}]'
+        }
+
+        r = requests.get(negotiate_url, params=params, timeout=10)
+        r.raise_for_status()
+
+        data = r.json()
+        token = data["ConnectionToken"]
+
+        token = urllib.parse.quote(token)
+
+        ws_url = (
+            "wss://livetiming.formula1.com/signalr/connect?"
+            f"transport=webSockets&clientProtocol=1.5"
+            f"&connectionToken={token}"
+            "&connectionData=%5B%7B%22name%22%3A%22streaming%22%7D%5D"
+        )
+
+    except Exception as e:
+        print("F1 negotiate failed:", e)
+        return
+
     def on_message(ws, message):
         try:
-            data = json.loads(message)
+            payload = json.loads(message)
         except:
             return
 
-        if not isinstance(data, dict):
+        if "M" not in payload:
             return
 
-        if "M" not in data:
-            return
-
-        for msg in data["M"]:
+        for msg in payload["M"]:
             if msg.get("M") != "feed":
                 continue
 
@@ -236,10 +263,36 @@ def start_f1_live_timing():
                 continue
 
             topic = args[0]
-            payload = args[1]
+            data = args[1]
 
             if topic == "TimingData":
-                process_timing_data(payload)
+                process_timing_data(data)
+
+    def on_open(ws):
+        global ws_connected
+        ws_connected = True
+
+        subscribe = {
+            "H": "streaming",
+            "M": "Subscribe",
+            "A": [["TimingData"]],
+            "I": 1
+        }
+
+        ws.send(json.dumps(subscribe))
+
+    def on_close(ws, *_):
+        global ws_connected
+        ws_connected = False
+
+    ws = websocket.WebSocketApp(
+        ws_url,
+        on_message=on_message,
+        on_open=on_open,
+        on_close=on_close
+    )
+
+    ws.run_forever()
 
     def on_open(ws):
         global ws_connected
